@@ -4,17 +4,21 @@ unit IdGoogleDNS;
 
 interface
 uses
-  IdDNSoverHTTPSResolver;
+  IdDNSoverHTTPSResolver, System.Classes;
 
 type
 
 // https://developers.google.com/speed/public-dns/docs/dns-over-https
 
   /// <summary> Google DNS over HTTPS resolver </summary>
+  [ComponentPlatforms(pidAllPlatforms)]
   TIdGoogleDNSResolver = class(TIdDoHResolver)
   protected
     procedure InitComponent; override;
     procedure UpdateURL(var VURL: string); override;
+  published
+    property EnablePrivacy;
+    property PreventAttacks;
   end;
 
 implementation

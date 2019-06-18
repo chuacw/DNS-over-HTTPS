@@ -4,17 +4,21 @@ unit IdCloudflareDNS;
 
 interface
 uses
-  IdDNSoverHTTPSResolver;
+  IdDNSoverHTTPSResolver, System.Classes;
 
 type
 
 // https://developers.cloudflare.com/1.1.1.1/dns-over-https/json-format/
   /// <summary> Cloudflare DNS over HTTPS resolver </summary>
+  [ComponentPlatforms(pidAllPlatforms)]
   TIdCloudflareDNSResolver = class(TIdDoHResolver)
   protected
     procedure InitComponent; override;
     procedure UpdateURL(var VURL: string); override;
     procedure UpdateAccept; override;
+  published
+    property DisableValidation;
+    property DNSSecOk;
   end;
 
 implementation

@@ -4,13 +4,14 @@ unit IdQuad9DNS;
 
 interface
 uses
-  IdDNSoverHTTPSResolver;
+  IdDNSoverHTTPSResolver, System.Classes;
 
 type
 
 // https://www.quad9.net/doh-quad9-dns-servers/
 
   /// <summary> Quad9 DNS over HTTPS resolver </summary>
+  [ComponentPlatforms(pidAllPlatforms)]
   TIdQuad9DNSResolver = class(TIdDoHResolver)
   protected
     procedure InitComponent; override;

@@ -46,7 +46,7 @@ type
 implementation
 uses
   System.JSON, IdStack, System.StrUtils, System.SysUtils, InternetDateUtils,
-  System.DateUtils, IdGlobalProtocols, IdSSLOpenSSL;
+  System.DateUtils, IdGlobalProtocols, IdSSLOpenSSL, IdExceptionCore;
 
 type
   TIdHTTPKeepAliveResponse = class(TIdHTTP)
@@ -173,295 +173,297 @@ var
 begin
   Result := nil;
   LJSONObj := TJSONObject.ParseJSONValue(AResponse) as TJSONObject;
-  LJSONObj.TryGetValue<UInt16>('Status', LStatus);
-  LJSONObj.TryGetValue<Boolean>('TC', TC);
-  LJSONObj.TryGetValue<Boolean>('RD', RD);
-  LJSONObj.TryGetValue<Boolean>('RA', RA);
-  LJSONObj.TryGetValue<Boolean>('AD', AD);
-  LJSONObj.TryGetValue<Boolean>('CD', CD);
-  BitCode := 0; QDCount := 0; ANCount := 0; NSCount := 0; ARCount := 0;
-  if LJSONObj.TryGetValue('Question', LQuestions) then
-    QDCount := LQuestions.Count;
-  if LJSONObj.TryGetValue('Answer', LAnswers) then
-    ANCount := LAnswers.Count;
-  if LJSONObj.TryGetValue('Authority', LAuthority) then
-    NSCount := LAuthority.Count;
-  if LJSONObj.TryGetValue('Additional', LAdditional) then
-    ARCount := LAdditional.Count;
+  try
+    LJSONObj.TryGetValue<UInt16>('Status', LStatus);
+    LJSONObj.TryGetValue<Boolean>('TC', TC);
+    LJSONObj.TryGetValue<Boolean>('RD', RD);
+    LJSONObj.TryGetValue<Boolean>('RA', RA);
+    LJSONObj.TryGetValue<Boolean>('AD', AD);
+    LJSONObj.TryGetValue<Boolean>('CD', CD);
+    BitCode := 0; QDCount := 0; ANCount := 0; NSCount := 0; ARCount := 0;
+    if LJSONObj.TryGetValue('Question', LQuestions) then
+      QDCount := LQuestions.Count;
+    if LJSONObj.TryGetValue('Answer', LAnswers) then
+      ANCount := LAnswers.Count;
+    if LJSONObj.TryGetValue('Authority', LAuthority) then
+      NSCount := LAuthority.Count;
+    if LJSONObj.TryGetValue('Additional', LAdditional) then
+      ARCount := LAdditional.Count;
 
-  Result := ToBytes(GStack.HostToNetwork(ID)) +
-            ToBytes(GStack.HostToNetwork(BitCode)) +
-            ToBytes(GStack.HostToNetwork(QDCount)) +
-            ToBytes(GStack.HostToNetwork(ANCount)) +
-            ToBytes(GStack.HostToNetwork(NSCount)) +
-            ToBytes(GStack.HostToNetwork(ARCount));
+    Result := ToBytes(GStack.HostToNetwork(ID)) +
+              ToBytes(GStack.HostToNetwork(BitCode)) +
+              ToBytes(GStack.HostToNetwork(QDCount)) +
+              ToBytes(GStack.HostToNetwork(ANCount)) +
+              ToBytes(GStack.HostToNetwork(NSCount)) +
+              ToBytes(GStack.HostToNetwork(ARCount));
 
-  if QDCount > 0 then
-    begin
-      for I := 0 to QDCount-1 do
-        begin
-          LQuestionObj := LQuestions.Items[I] as TJSONObject;
-          LDomainName := LQuestionObj.GetValue<string>('name');
-          LTypeValue := LQuestionObj.GetValue<UInt16>('type');
+    if QDCount > 0 then
+      begin
+        for I := 0 to QDCount-1 do
+          begin
+            LQuestionObj := LQuestions.Items[I] as TJSONObject;
+            LDomainName := LQuestionObj.GetValue<string>('name');
+            LTypeValue := LQuestionObj.GetValue<UInt16>('type');
 
-          Result := Result + DomainNameToDNSStr(LDomainName) +
-                        ToBytes(GStack.HostToNetwork(LTypeValue)) +
-                      ToBytes(GStack.HostToNetwork(UInt16(AQueryClass))); // 0 as class
-        end;
-    end;
-
-//  FDNSHeader.ParseQuery(Result); // remove when inside a DNSResolver
-  if ANCount > 0 then
-    begin
-      for I := 0 to ANCount-1 do
-        begin
-          RData := nil;
-          LAnswerObj := LAnswers.Items[I] as TJSONObject;
-          LNameValue := LAnswerObj.GetValue<string>('name');
-          LTypeValue := LAnswerObj.GetValue<UInt16>('type');
-          // Class? What value?
-          LClassValue := 0;
-
-          LTTLValue  := LAnswerObj.GetValue<UInt32>('TTL');
-          LDataValue := LAnswerObj.GetValue<string>('data'); // IP address
-
-          case LTypeValue of
-            TypeCode_SOA: begin
-              LSOA := TArray<string>(SplitString(LDataValue, ' '));
-              LMName := LSOA[0];
-              LRName := LSOA[1];
-              LSOASerial := StrToUInt(LSOA[2]);
-              LSOARefresh := StrToUInt(LSOA[3]);
-              LSOARetry := StrToUInt(LSOA[4]);
-              LSOAExpire := StrToUIntDef(LSOA[5], 0);
-              if LSOAExpire = 0 then
-                begin
-                  var LSOAExpireDT: TDateTime := 0;
-                  if TryRFC1123ToDateTime(LSOA[5], LSOAExpireDT) then
-                    begin
-                      var MSecsSince1970 := MilliSecondsBetween(LSOAExpireDT, EncodeDate(1970, 1, 1));
-                      LSOAExpire := MSecsSince1970;
-                    end;
-                end;
-              LSOAMinimumTTL := StrToUInt(LSOA[6]);
-
-              RData := DomainNameToDNSStr(LMName) + DomainNameToDNSStr(LRName) +
-                ToBytes(GStack.HostToNetwork(LSOASerial)) +
-                ToBytes(GStack.HostToNetwork(LSOARefresh)) +
-                ToBytes(GStack.HostToNetwork(LSOARetry)) +
-                ToBytes(GStack.HostToNetwork(LSOAExpire)) +
-                ToBytes(GStack.HostToNetwork(LSOAMinimumTTL));
-            end;
-            TypeCode_TXT: begin
-              RData := NormalStrToDNSStr(LDataValue) + [0];
-            end;
-            TypeCode_NAPTR: begin
-              var LOrder: UInt16 := 11;
-              var LPref:  UInt16 := 22;
-              var LFlags: string := 'FLAG';
-              var LService: string := 'Service';
-              var LRegExp: string  := 'REGEXP';
-              var LReplacement: string := 'REPLACE';
-
-              RData := ToBytes(GStack.NetworkToHost(LOrder)) +
-                       ToBytes(GStack.NetworkToHost(LPref)) +
-                       NormalStrToDNSStr(LFlags) +
-                       NormalStrToDNSStr(LService) +
-                       NormalStrToDNSStr(LRegExp) +
-                       NormalStrToDNSStr(LReplacement);
-            end;
-            TypeCode_HINFO: begin
-              var LCPU := NormalStrToDNSStr('AMD');
-              var LOS  := NormalStrToDNSStr('Windows');
-              RData := LCPU + LOS + [0];
-            end;
-            TypeCode_A: begin
-              // FIPAddress := MakeUInt32IntoIPv4Address(GStack.NetworkToHost(OrdFourByteToUInt32(RData[0], RData[1], RData[2], RData[3])));
-              if IsValidIP(LDataValue) then
-                RData := ToBytes(GStack.HostToNetwork(IPv4ToUInt32(LDataValue)));
-            end;
-            TypeCode_NS,
-            TypeCode_CName: begin
-              RData := DomainNameToDNSStr(LDataValue);
-            end;
-            TypeCode_MX: begin
-              LMX := SplitString(LDataValue, ' ');
-              var LPreference: UInt16 := StrToUInt(LMX[0]);
-              var LExchangeServer := LMX[1];
-              RData := ToBytes(GStack.HostToNetwork(LPreference)) +
-                DomainNameToDNSStr(LExchangeServer);
-            end;
-            TypeCode_AAAA: begin
-              if IsValidIP(LDataValue) and (Length(LDataValue)>15) then
-                begin
-                  IPv6ToIdIPv6Address(LDataValue, VAddress);
-                  RData := nil;
-                  for J := 0 to 7 do
-                    RData := RData + ToBytes(GStack.HostToNetwork(VAddress[J]));
-                end;
-            end;
-            TypeCode_RRSIG: begin // RRSIG
-//      "Expires": "Wed, 12 Jun 2019 06:32:03 UTC",
-//      "data": "SOA 8 2 3600 20190622141844 20190601215824 23689 example.com. cbLvbWFP1gPLnXTLMZOwzynw9dd0hrojJcw0Xody31u+zqXPLxclFsswKzUu972875Hzyo18jYFeQ52gwQ0voRT15HUfDiBtfR/sXJl0AgNoBiF3zo12ehzS/rvDZNDoRQjNFsBcCJnKSg+tqWft3xA/s8g1TUCSjnfULql/Ykk="
-// RRSIG for example.com
-//      "data": "nsec 8 2 3600 1561200044 1559390304 23689 example.com. hBT2zBFJlU5EUkdSfNwtueAWnMa7/BmkCGHDypBxmR5po5huPFQppIr87N7pbfhVHrhDxoZMktALYilVuCo0yeJY0ZwQZWw8XiIccuQorrhvIj4bywQ/7ol0F033CUpGAZb3JxzfdKh9CDY1Ma+0/qadYH1xSU18juYH3G/2GHw="
-              var LExpiresDT: string; var LExpiresUInt: UInt32 := 0;
-              var LExpires: TDateTime := 0;
-              if LAnswerObj.TryGetValue<string>('Expires', LExpiresDT) then
-                TryRFC1123ToDateTime(LExpiresDT, LExpires);
-
-              LRRSIG := SplitString(LDataValue, ' ');
-              var LDNSTypeCovered      := LRRSIG[0];  // nsec
-              var LAlgorithmCovered    := LRRSIG[1];  // 8
-              var LNumOfLabels         := LRRSIG[2];  // 2
-              var LOriginalTTL         := LRRSIG[3];  // 3600
-              var LSignatureExpiration := LRRSIG[4];  // 1561200044
-              var LSignatureInception  := LRRSIG[5];  // 1559390304
-              var LKeyTag              := LRRSIG[6];  // 23689
-              var LSignerName          := LRRSIG[7];  // example.com
-              var LSignature           := LRRSIG[8];  // hBT2zBFJlU5EUk....
-
-              RData := [0];
-
-//              RData := NormalStrToDNSStr(LMName) + NormalStrToDNSStr(LRName) +
-//                ToBytes(GStack.HostToNetwork(LSOASerial)) +
-//                ToBytes(GStack.HostToNetwork(LSOARefresh)) +
-//                ToBytes(GStack.HostToNetwork(LSOARetry)) +
-//                ToBytes(GStack.HostToNetwork(LSOAExpire)) +
-//                ToBytes(GStack.HostToNetwork(LSOAMinimumTTL));
-//
-//              RD_Length := Length(RData);
-            end;
-          else
-            raise Exception.Create('Unhandled type!');
+            Result := Result + DomainNameToDNSStr(LDomainName) +
+                          ToBytes(GStack.HostToNetwork(LTypeValue)) +
+                        ToBytes(GStack.HostToNetwork(UInt16(AQueryClass))); // 0 as class
           end;
+      end;
 
-          RD_Length := Length(RData);
+    if ANCount > 0 then
+      begin
+        for I := 0 to ANCount-1 do
+          begin
+            RData := nil;
+            LAnswerObj := LAnswers.Items[I] as TJSONObject;
+            LNameValue := LAnswerObj.GetValue<string>('name');
+            LTypeValue := LAnswerObj.GetValue<UInt16>('type');
+            // Class? What value?
+            LClassValue := 0;
 
-          Result := Result + DomainNameToDNSStr(LNameValue) +
-            ToBytes(GStack.HostToNetwork(LTypeValue)) +
-            ToBytes(GStack.HostToNetwork(LClassValue)) +
-            ToBytes(GStack.HostToNetwork(LTTLValue)) +
-            ToBytes(GStack.HostToNetwork(RD_Length)) + RData;
-        end;
-    end;
+            LTTLValue  := LAnswerObj.GetValue<UInt32>('TTL');
+            LDataValue := LAnswerObj.GetValue<string>('data'); // IP address
 
-  if NSCount > 0 then
-    begin
-      for I := 0 to NSCount-1 do
-        begin
-          RData := nil;
-          LAnswerObj := LAuthority.Items[I] as TJSONObject;
-          LNameValue := LAnswerObj.GetValue<string>('name');
-          LTypeValue := LAnswerObj.GetValue<UInt16>('type');
-          // Class? What value?
-          LClassValue := 0;
+            case LTypeValue of
+              TypeCode_SOA: begin
+                LSOA := TArray<string>(SplitString(LDataValue, ' '));
+                LMName := LSOA[0];
+                LRName := LSOA[1];
+                LSOASerial := StrToUInt(LSOA[2]);
+                LSOARefresh := StrToUInt(LSOA[3]);
+                LSOARetry := StrToUInt(LSOA[4]);
+                LSOAExpire := StrToUIntDef(LSOA[5], 0);
+                if LSOAExpire = 0 then
+                  begin
+                    var LSOAExpireDT: TDateTime := 0;
+                    if TryRFC1123ToDateTime(LSOA[5], LSOAExpireDT) then
+                      begin
+                        var MSecsSince1970 := MilliSecondsBetween(LSOAExpireDT, EncodeDate(1970, 1, 1));
+                        LSOAExpire := MSecsSince1970;
+                      end;
+                  end;
+                LSOAMinimumTTL := StrToUInt(LSOA[6]);
 
-          LTTLValue  := LAnswerObj.GetValue<UInt32>('TTL');
-          LDataValue := LAnswerObj.GetValue<string>('data');
-// "jule.ns.cloudflare.com. dns.cloudflare.com. 2031180241 10000 2400 604800 3600"
-// MNAME                   RNAME               Serial     Refresh Retry Expire MinimumTTL
+                RData := DomainNameToDNSStr(LMName) + DomainNameToDNSStr(LRName) +
+                  ToBytes(GStack.HostToNetwork(LSOASerial)) +
+                  ToBytes(GStack.HostToNetwork(LSOARefresh)) +
+                  ToBytes(GStack.HostToNetwork(LSOARetry)) +
+                  ToBytes(GStack.HostToNetwork(LSOAExpire)) +
+                  ToBytes(GStack.HostToNetwork(LSOAMinimumTTL));
+              end;
+              TypeCode_TXT: begin
+                RData := NormalStrToDNSStr(LDataValue) + [0];
+              end;
+              TypeCode_NAPTR: begin
+                var LOrder: UInt16 := 11;
+                var LPref:  UInt16 := 22;
+                var LFlags: string := 'FLAG';
+                var LService: string := 'Service';
+                var LRegExp: string  := 'REGEXP';
+                var LReplacement: string := 'REPLACE';
 
-          case LTypeValue of
-            TypeCode_SOA: begin
-              LSOA := SplitString(LDataValue, ' ');
-              LMName := LSOA[0];
-              LRName := LSOA[1];
-              LSOASerial := StrToUInt(LSOA[2]);
-              LSOARefresh := StrToUInt(LSOA[3]);
-              LSOARetry := StrToUInt(LSOA[4]);
-              LSOAExpire := StrToUIntDef(LSOA[5], 0);
-              if LSOAExpire = 0 then
-                begin
-                  var LSOAExpireDT: TDateTime := 0;
-                  if TryRFC1123ToDateTime(LSOA[5], LSOAExpireDT) then
-                    begin
-                      var MSecsSince1970 := MilliSecondsBetween(LSOAExpireDT, EncodeDate(1970, 1, 1));
-                      LSOAExpire := MSecsSince1970;
-                    end;
-                end;
-              LSOAMinimumTTL := StrToUInt(LSOA[6]);
+                RData := ToBytes(GStack.NetworkToHost(LOrder)) +
+                         ToBytes(GStack.NetworkToHost(LPref)) +
+                         NormalStrToDNSStr(LFlags) +
+                         NormalStrToDNSStr(LService) +
+                         NormalStrToDNSStr(LRegExp) +
+                         NormalStrToDNSStr(LReplacement);
+              end;
+              TypeCode_HINFO: begin
+                var LCPU := NormalStrToDNSStr('AMD');
+                var LOS  := NormalStrToDNSStr('Windows');
+                RData := LCPU + LOS + [0];
+              end;
+              TypeCode_A: begin
+                // FIPAddress := MakeUInt32IntoIPv4Address(GStack.NetworkToHost(OrdFourByteToUInt32(RData[0], RData[1], RData[2], RData[3])));
+                if IsValidIP(LDataValue) then
+                  RData := ToBytes(GStack.HostToNetwork(IPv4ToUInt32(LDataValue)));
+              end;
+              TypeCode_NS,
+              TypeCode_CName: begin
+                RData := DomainNameToDNSStr(LDataValue);
+              end;
+              TypeCode_MX: begin
+                LMX := SplitString(LDataValue, ' ');
+                var LPreference: UInt16 := StrToUInt(LMX[0]);
+                var LExchangeServer := LMX[1];
+                RData := ToBytes(GStack.HostToNetwork(LPreference)) +
+                  DomainNameToDNSStr(LExchangeServer);
+              end;
+              TypeCode_AAAA: begin
+                if IsValidIP(LDataValue) and (Length(LDataValue)>15) then
+                  begin
+                    IPv6ToIdIPv6Address(LDataValue, VAddress);
+                    RData := nil;
+                    for J := 0 to 7 do
+                      RData := RData + ToBytes(GStack.HostToNetwork(VAddress[J]));
+                  end;
+              end;
+              TypeCode_RRSIG: begin // RRSIG
+  //      "Expires": "Wed, 12 Jun 2019 06:32:03 UTC",
+  //      "data": "SOA 8 2 3600 20190622141844 20190601215824 23689 example.com. cbLvbWFP1gPLnXTLMZOwzynw9dd0hrojJcw0Xody31u+zqXPLxclFsswKzUu972875Hzyo18jYFeQ52gwQ0voRT15HUfDiBtfR/sXJl0AgNoBiF3zo12ehzS/rvDZNDoRQjNFsBcCJnKSg+tqWft3xA/s8g1TUCSjnfULql/Ykk="
+  // RRSIG for example.com
+  //      "data": "nsec 8 2 3600 1561200044 1559390304 23689 example.com. hBT2zBFJlU5EUkdSfNwtueAWnMa7/BmkCGHDypBxmR5po5huPFQppIr87N7pbfhVHrhDxoZMktALYilVuCo0yeJY0ZwQZWw8XiIccuQorrhvIj4bywQ/7ol0F033CUpGAZb3JxzfdKh9CDY1Ma+0/qadYH1xSU18juYH3G/2GHw="
+                var LExpiresDT: string; var LExpiresUInt: UInt32 := 0;
+                var LExpires: TDateTime := 0;
+                if LAnswerObj.TryGetValue<string>('Expires', LExpiresDT) then
+                  TryRFC1123ToDateTime(LExpiresDT, LExpires);
 
-              RData := DomainNameToDNSStr(LMName) + DomainNameToDNSStr(LRName) +
-                ToBytes(GStack.HostToNetwork(LSOASerial)) +
-                ToBytes(GStack.HostToNetwork(LSOARefresh)) +
-                ToBytes(GStack.HostToNetwork(LSOARetry)) +
-                ToBytes(GStack.HostToNetwork(LSOAExpire)) +
-                ToBytes(GStack.HostToNetwork(LSOAMinimumTTL));
+                LRRSIG := SplitString(LDataValue, ' ');
+                var LDNSTypeCovered      := LRRSIG[0];  // nsec
+                var LAlgorithmCovered    := LRRSIG[1];  // 8
+                var LNumOfLabels         := LRRSIG[2];  // 2
+                var LOriginalTTL         := LRRSIG[3];  // 3600
+                var LSignatureExpiration := LRRSIG[4];  // 1561200044
+                var LSignatureInception  := LRRSIG[5];  // 1559390304
+                var LKeyTag              := LRRSIG[6];  // 23689
+                var LSignerName          := LRRSIG[7];  // example.com
+                var LSignature           := LRRSIG[8];  // hBT2zBFJlU5EUk....
 
+                RData := [0];
+
+  //              RData := NormalStrToDNSStr(LMName) + NormalStrToDNSStr(LRName) +
+  //                ToBytes(GStack.HostToNetwork(LSOASerial)) +
+  //                ToBytes(GStack.HostToNetwork(LSOARefresh)) +
+  //                ToBytes(GStack.HostToNetwork(LSOARetry)) +
+  //                ToBytes(GStack.HostToNetwork(LSOAExpire)) +
+  //                ToBytes(GStack.HostToNetwork(LSOAMinimumTTL));
+  //
+  //              RD_Length := Length(RData);
+              end;
+            else
+              raise Exception.Create('Unhandled type!');
             end;
-            TypeCode_RRSIG: begin // RRSIG
-//      "Expires": "Wed, 12 Jun 2019 06:32:03 UTC",
-//      "data": "SOA 8 2 3600 20190622141844 20190601215824 23689 example.com. cbLvbWFP1gPLnXTLMZOwzynw9dd0hrojJcw0Xody31u+zqXPLxclFsswKzUu972875Hzyo18jYFeQ52gwQ0voRT15HUfDiBtfR/sXJl0AgNoBiF3zo12ehzS/rvDZNDoRQjNFsBcCJnKSg+tqWft3xA/s8g1TUCSjnfULql/Ykk="
-              var LExpiresDT: string; var LExpiresUInt: UInt32 := 0;
-              var LExpires: TDateTime := 0;
-              if LAnswerObj.TryGetValue<string>('Expires', LExpiresDT) then
-                TryRFC1123ToDateTime(LExpiresDT, LExpires);
 
-              LSOA := SplitString(LDataValue, ' ');
-              LSOASerial := 0;
-              LSOARefresh := 0;
-              LSOARetry := 0;
-              LSOAExpire := 0;
-              LSOAMinimumTTL := 0;
+            RD_Length := Length(RData);
 
-              LMName := ''; LRName := '';
-              RData := NormalStrToDNSStr(LMName) + NormalStrToDNSStr(LRName) +
-                ToBytes(GStack.HostToNetwork(LSOASerial)) +
-                ToBytes(GStack.HostToNetwork(LSOARefresh)) +
-                ToBytes(GStack.HostToNetwork(LSOARetry)) +
-                ToBytes(GStack.HostToNetwork(LSOAExpire)) +
-                ToBytes(GStack.HostToNetwork(LSOAMinimumTTL));
-
-            end;
-            47: begin
-//      "Expires": "Wed, 12 Jun 2019 06:32:03 UTC",
-//      "data": "www.example.com. A NS SOA TXT AAAA RRSIG NSEC DNSKEY"
-              var LExpiresDT: string; var LExpiresUInt: UInt32 := 0;
-              var LExpires: TDateTime := 0;
-              if LAnswerObj.TryGetValue<string>('Expires', LExpiresDT) then
-                TryRFC1123ToDateTime(LExpiresDT, LExpires);
-              LDataValue := LAnswerObj.GetValue<string>('data');
-
-              LSOASerial := 0;
-              LSOARefresh := 0;
-              LSOARetry := 0;
-              LSOAExpire := 0;
-              LSOAMinimumTTL := 0;
-
-              LMName := ''; LRName := '';
-              RData := NormalStrToDNSStr(LMName) + NormalStrToDNSStr(LRName) +
-                ToBytes(GStack.HostToNetwork(LSOASerial)) +
-                ToBytes(GStack.HostToNetwork(LSOARefresh)) +
-                ToBytes(GStack.HostToNetwork(LSOARetry)) +
-                ToBytes(GStack.HostToNetwork(LSOAExpire)) +
-                ToBytes(GStack.HostToNetwork(LSOAMinimumTTL));
-
-            end;
-          else
-            raise Exception.Create('Unhandled type!');
+            Result := Result + DomainNameToDNSStr(LNameValue) +
+              ToBytes(GStack.HostToNetwork(LTypeValue)) +
+              ToBytes(GStack.HostToNetwork(LClassValue)) +
+              ToBytes(GStack.HostToNetwork(LTTLValue)) +
+              ToBytes(GStack.HostToNetwork(RD_Length)) + RData;
           end;
+      end;
 
-          RD_Length := Length(RData);
+    if NSCount > 0 then
+      begin
+        for I := 0 to NSCount-1 do
+          begin
+            RData := nil;
+            LAnswerObj := LAuthority.Items[I] as TJSONObject;
+            LNameValue := LAnswerObj.GetValue<string>('name');
+            LTypeValue := LAnswerObj.GetValue<UInt16>('type');
+            // Class? What value?
+            LClassValue := 0;
 
-          Result := Result + DomainNameToDNSStr(LNameValue) +
-            ToBytes(GStack.HostToNetwork(LTypeValue)) +
-            ToBytes(GStack.HostToNetwork(LClassValue)) +
-            ToBytes(GStack.HostToNetwork(LTTLValue)) +
-            ToBytes(GStack.HostToNetwork(RD_Length)) +
-            RData;
-        end;
-    end;
+            LTTLValue  := LAnswerObj.GetValue<UInt32>('TTL');
+            LDataValue := LAnswerObj.GetValue<string>('data');
+  // "jule.ns.cloudflare.com. dns.cloudflare.com. 2031180241 10000 2400 604800 3600"
+  // MNAME                   RNAME               Serial     Refresh Retry Expire MinimumTTL
 
-  if ARCount > 0 then
-    begin
-      for I := 0 to NSCount-1 do
-        begin
+            case LTypeValue of
+              TypeCode_SOA: begin
+                LSOA := SplitString(LDataValue, ' ');
+                LMName := LSOA[0];
+                LRName := LSOA[1];
+                LSOASerial := StrToUInt(LSOA[2]);
+                LSOARefresh := StrToUInt(LSOA[3]);
+                LSOARetry := StrToUInt(LSOA[4]);
+                LSOAExpire := StrToUIntDef(LSOA[5], 0);
+                if LSOAExpire = 0 then
+                  begin
+                    var LSOAExpireDT: TDateTime := 0;
+                    if TryRFC1123ToDateTime(LSOA[5], LSOAExpireDT) then
+                      begin
+                        var MSecsSince1970 := MilliSecondsBetween(LSOAExpireDT, EncodeDate(1970, 1, 1));
+                        LSOAExpire := MSecsSince1970;
+                      end;
+                  end;
+                LSOAMinimumTTL := StrToUInt(LSOA[6]);
 
-        end;
-    end;
+                RData := DomainNameToDNSStr(LMName) + DomainNameToDNSStr(LRName) +
+                  ToBytes(GStack.HostToNetwork(LSOASerial)) +
+                  ToBytes(GStack.HostToNetwork(LSOARefresh)) +
+                  ToBytes(GStack.HostToNetwork(LSOARetry)) +
+                  ToBytes(GStack.HostToNetwork(LSOAExpire)) +
+                  ToBytes(GStack.HostToNetwork(LSOAMinimumTTL));
 
-  LJSONObj.Free;
+              end;
+              TypeCode_RRSIG: begin // RRSIG
+  //      "Expires": "Wed, 12 Jun 2019 06:32:03 UTC",
+  //      "data": "SOA 8 2 3600 20190622141844 20190601215824 23689 example.com. cbLvbWFP1gPLnXTLMZOwzynw9dd0hrojJcw0Xody31u+zqXPLxclFsswKzUu972875Hzyo18jYFeQ52gwQ0voRT15HUfDiBtfR/sXJl0AgNoBiF3zo12ehzS/rvDZNDoRQjNFsBcCJnKSg+tqWft3xA/s8g1TUCSjnfULql/Ykk="
+                var LExpiresDT: string; var LExpiresUInt: UInt32 := 0;
+                var LExpires: TDateTime := 0;
+                if LAnswerObj.TryGetValue<string>('Expires', LExpiresDT) then
+                  TryRFC1123ToDateTime(LExpiresDT, LExpires);
+
+                LSOA := SplitString(LDataValue, ' ');
+                LSOASerial := 0;
+                LSOARefresh := 0;
+                LSOARetry := 0;
+                LSOAExpire := 0;
+                LSOAMinimumTTL := 0;
+
+                LMName := ''; LRName := '';
+                RData := NormalStrToDNSStr(LMName) + NormalStrToDNSStr(LRName) +
+                  ToBytes(GStack.HostToNetwork(LSOASerial)) +
+                  ToBytes(GStack.HostToNetwork(LSOARefresh)) +
+                  ToBytes(GStack.HostToNetwork(LSOARetry)) +
+                  ToBytes(GStack.HostToNetwork(LSOAExpire)) +
+                  ToBytes(GStack.HostToNetwork(LSOAMinimumTTL));
+
+              end;
+              47: begin
+  //      "Expires": "Wed, 12 Jun 2019 06:32:03 UTC",
+  //      "data": "www.example.com. A NS SOA TXT AAAA RRSIG NSEC DNSKEY"
+                var LExpiresDT: string; var LExpiresUInt: UInt32 := 0;
+                var LExpires: TDateTime := 0;
+                if LAnswerObj.TryGetValue<string>('Expires', LExpiresDT) then
+                  TryRFC1123ToDateTime(LExpiresDT, LExpires);
+                LDataValue := LAnswerObj.GetValue<string>('data');
+
+                LSOASerial := 0;
+                LSOARefresh := 0;
+                LSOARetry := 0;
+                LSOAExpire := 0;
+                LSOAMinimumTTL := 0;
+
+                LMName := ''; LRName := '';
+                RData := NormalStrToDNSStr(LMName) + NormalStrToDNSStr(LRName) +
+                  ToBytes(GStack.HostToNetwork(LSOASerial)) +
+                  ToBytes(GStack.HostToNetwork(LSOARefresh)) +
+                  ToBytes(GStack.HostToNetwork(LSOARetry)) +
+                  ToBytes(GStack.HostToNetwork(LSOAExpire)) +
+                  ToBytes(GStack.HostToNetwork(LSOAMinimumTTL));
+
+              end;
+            else
+              raise Exception.Create('Unhandled type!');
+            end;
+
+            RD_Length := Length(RData);
+
+            Result := Result + DomainNameToDNSStr(LNameValue) +
+              ToBytes(GStack.HostToNetwork(LTypeValue)) +
+              ToBytes(GStack.HostToNetwork(LClassValue)) +
+              ToBytes(GStack.HostToNetwork(LTTLValue)) +
+              ToBytes(GStack.HostToNetwork(RD_Length)) +
+              RData;
+          end;
+      end;
+
+    if ARCount > 0 then
+      begin
+        for I := 0 to NSCount-1 do
+          begin
+
+          end;
+      end;
+
+  finally
+    LJSONObj.Free;
+  end;
 end;
 
 procedure TIdDoHResolver.Resolve(const ADomainName: string; SOARR: TIdRR_SOA;
@@ -555,6 +557,8 @@ begin
           end;
         FQueryStrings := nil;
       end;
+    if LType = '' then
+      raise EIdDnsResolverError.Create('Need to specify QueryType!');
     LURL := Format('%s?name=%s%s', [FQueryURL, ADomainName, LType]);
     UpdateURL(LURL);
     try
