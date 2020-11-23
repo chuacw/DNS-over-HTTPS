@@ -14,6 +14,7 @@ type
   [ComponentPlatforms(pidAllPlatforms)]
   TIdQuad9DNSResolver = class(TIdDoHResolver)
   protected
+    /// <summary> Updates the Bootstrap and QueryURL to Quad9 specific values.</summary>
     procedure InitComponent; override;
     procedure UpdateURL(var VURL: string); override;
     procedure UpdateAccept; override;

@@ -14,7 +14,9 @@ type
   [ComponentPlatforms(pidAllPlatforms)]
   TIdGoogleDNSResolver = class(TIdDoHResolver)
   protected
+    /// <summary>Removes the Bootstrap address, updates the QueryURL to Google specific values, and enables privacy and attack prevention. </summary>
     procedure InitComponent; override;
+    /// <summary>Updates the URL to enable privacy and prevent attacks. </summary>
     procedure UpdateURL(var VURL: string); override;
   published
     property EnablePrivacy;
